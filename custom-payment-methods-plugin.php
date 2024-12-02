@@ -1,9 +1,9 @@
 <?php
 /*
-Plugin Name: Custom Payment Methods Based on Category
-Description: Altera os métodos de pagamento disponíveis com base nas categorias dos produtos no carrinho e adiciona um alerta para evitar combinações de pagamento incompatíveis. Também impede a adição de produtos de categorias específicas no mesmo carrinho.
+Plugin Name: Custom Payment Methods for DBS Category
+Description: Configurações personalizadas para métodos de pagamento e restrições de carrinho com base nas categorias dos produtos.
 Author: Mateus Cardoso
-Version: 1.6
+Version: 2.1
 */
 
 function custom_payment_methods_based_on_category( $available_gateways ) {
@@ -11,46 +11,45 @@ function custom_payment_methods_based_on_category( $available_gateways ) {
         return $available_gateways; 
     }
 
-    $asaas_categories = array('Novos', 'Semi-Novos', 'Peças DBS');
-    $asaas_category_ids = get_term_ids_by_names($asaas_categories);
+    $dbs_category = 'DBS';
+    $dbs_category_id = get_term_id_by_name($dbs_category);
 
-    $categories_in_cart = get_categories_in_cart($asaas_category_ids);
+    $categories_in_cart = get_categories_in_cart(array($dbs_category_id));
 
-    // Se o carrinho contém categorias misturadas
-    if ( $categories_in_cart['asaas'] && $categories_in_cart['non_asaas'] ) {
-        wc_add_notice('Produtos e peças não podem ser comprados juntos. Por favor, retire uma categoria do seu carrinho para adicionar este item.', 'error');
-        WC()->session->custom_payment_error = true;
-        return array(); // Nenhum gateway disponível
-    }
-
-    // Ajusta os gateways de pagamento com base nas categorias
-    if ( $categories_in_cart['asaas'] ) {
-        $available_gateways = filter_gateways($available_gateways, array('asaas-pix', 'asaas-credit-card', 'asaas-ticket'));
+    // Se o carrinho contém produtos da categoria "DBS"
+    if ( $categories_in_cart['dbs'] ) {
+        // Apenas os métodos da Belluno são permitidos
+        $allowed_gateways = array('belluno_card', 'belluno_pix', 'belluno_bankslip');
     } else {
-        $available_gateways = filter_gateways($available_gateways, array('woo-mercado-pago-basic', 'woo-mercado-pago-pix', 'woo-mercado-pago-ticket', 'woo-mercado-pago-custom'));
+        // Métodos para categorias diferentes de "DBS"
+        $allowed_gateways = array(
+            'woo-pagarme-payments-credit_card',
+            'woo-pagarme-payments-2_cards',
+            'asaas-ticket',
+            'asaas-pix'
+        );
     }
 
-    // Remove o erro de pagamento customizado se a condição não for mais atendida
-    if ( isset( WC()->session->custom_payment_error ) && WC()->session->custom_payment_error ) {
-        unset( WC()->session->custom_payment_error );
-    }
+    // Filtra os métodos permitidos
+    $available_gateways = filter_gateways($available_gateways, $allowed_gateways);
 
     return $available_gateways;
 }
 add_filter( 'woocommerce_available_payment_gateways', 'custom_payment_methods_based_on_category' );
 
 function prevent_mixed_categories_in_cart( $passed, $product_id, $quantity, $variation_id = 0, $variation = '' ) {
-    $asaas_categories = array('Novos', 'Semi-Novos', 'Peças DBS');
-    $asaas_category_ids = get_term_ids_by_names($asaas_categories);
+    $dbs_category = 'DBS';
+    $dbs_category_id = get_term_id_by_name($dbs_category);
 
-    $categories_in_cart = get_categories_in_cart($asaas_category_ids);
+    $categories_in_cart = get_categories_in_cart(array($dbs_category_id));
 
     // Verifica o produto que está sendo adicionado
     $product_categories = wp_get_post_terms( $product_id, 'product_cat', array('fields' => 'ids') );
-    $is_asaas_product = has_asaas_category($product_categories, $asaas_category_ids);
+    $is_dbs_product = in_array($dbs_category_id, $product_categories);
 
-    if ( $categories_in_cart['asaas'] && !$is_asaas_product || $categories_in_cart['non_asaas'] && $is_asaas_product ) {
-wc_add_notice('Você não pode comprar produtos e peças no mesmo pedido. Por favor, remova os itens de uma das categorias do seu carrinho para adicionar este item.', 'error');
+    // Bloqueia adição de produtos não "DBS" se houver "DBS" no carrinho, e vice-versa
+    if ( $categories_in_cart['dbs'] && !$is_dbs_product || $categories_in_cart['non_dbs'] && $is_dbs_product ) {
+        wc_add_notice('Produtos da categoria DBS não podem ser comprados junto com outros itens. Por favor, ajuste o carrinho.', 'error');
         return false;
     }
 
@@ -58,49 +57,24 @@ wc_add_notice('Você não pode comprar produtos e peças no mesmo pedido. Por fa
 }
 add_filter( 'woocommerce_add_to_cart_validation', 'prevent_mixed_categories_in_cart', 10, 5 );
 
-function get_term_ids_by_names($category_names) {
-    $category_ids = array();
-    foreach ($category_names as $name) {
-        $term = get_term_by('name', $name, 'product_cat');
-        if ($term && !is_wp_error($term)) {
-            $category_ids[] = $term->term_id;
-        }
-    }
-    return $category_ids;
+function get_term_id_by_name($category_name) {
+    $term = get_term_by('name', $category_name, 'product_cat');
+    return ($term && !is_wp_error($term)) ? $term->term_id : 0;
 }
 
-function get_categories_in_cart($asaas_category_ids) {
-    $categories_in_cart = array('asaas' => false, 'non_asaas' => false);
+function get_categories_in_cart($restricted_category_ids) {
+    $categories_in_cart = array('dbs' => false, 'non_dbs' => false);
 
     foreach ( WC()->cart->get_cart() as $cart_item ) {
         $product_categories = wp_get_post_terms( $cart_item['product_id'], 'product_cat', array('fields' => 'ids') );
-        if ( has_asaas_category($product_categories, $asaas_category_ids) ) {
-            $categories_in_cart['asaas'] = true;
+        if ( array_intersect($product_categories, $restricted_category_ids) ) {
+            $categories_in_cart['dbs'] = true;
         } else {
-            $categories_in_cart['non_asaas'] = true;
+            $categories_in_cart['non_dbs'] = true;
         }
     }
 
     return $categories_in_cart;
-}
-
-function has_asaas_category($product_categories, $asaas_category_ids) {
-    foreach ($product_categories as $cat_id) {
-        if (in_array($cat_id, $asaas_category_ids) || is_descendant_of($cat_id, $asaas_category_ids)) {
-            return true;
-        }
-    }
-    return false;
-}
-
-function is_descendant_of($cat_id, $parent_ids) {
-    while ($parent_id = get_term($cat_id, 'product_cat')->parent) {
-        if (in_array($parent_id, $parent_ids)) {
-            return true;
-        }
-        $cat_id = $parent_id;
-    }
-    return false;
 }
 
 function filter_gateways($available_gateways, $allowed_gateways) {
@@ -108,10 +82,3 @@ function filter_gateways($available_gateways, $allowed_gateways) {
         return in_array($gateway_id, $allowed_gateways);
     }, ARRAY_FILTER_USE_KEY);
 }
-
-function reset_custom_payment_error_notice() {
-    if ( isset( WC()->session->custom_payment_error ) ) {
-        unset( WC()->session->custom_payment_error );
-    }
-}
-add_action( 'woocommerce_before_checkout_form', 'reset_custom_payment_error_notice', 1 );
